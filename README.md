@@ -46,6 +46,19 @@ A SwiftUI macOS desktop companion that captures microphone audio with `AVAudioRe
    ```
    A healthy server responds with `{"status":"ready","device":"cuda"}` (or `cpu` if you’re running without a GPU). The `/transcribe` endpoint returns JSON with a `text` field for your clip.
 
+### Keep the backend running automatically
+
+Install the provided launch agent once and macOS will boot the FastAPI server at login:
+
+```bash
+./scripts/manage_parakeet_service.sh install   # start now + on future logins
+./scripts/manage_parakeet_service.sh status    # view launchctl state
+./scripts/manage_parakeet_service.sh restart   # reload after edits
+./scripts/manage_parakeet_service.sh uninstall # stop + remove the agent
+```
+
+The generated plist lives at `~/Library/LaunchAgents/com.hemanth.parakeet.plist` and logs stream into `/tmp/parakeet.log`.
+
 > Tip: Want everything on the laptop? Swap the endpoint with FluidAudio/CoreML for an Apple-Silicon-only pipeline—just expose the same `/transcribe` contract.
 
 ## AI Question Answering
