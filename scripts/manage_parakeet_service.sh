@@ -14,13 +14,14 @@ SERVICE_TARGET="gui/$UID/${SERVICE_LABEL}"
 
 usage() {
   cat <<'EOF'
-Usage: manage_parakeet_service.sh [install|uninstall|restart|status]
+Usage: manage_parakeet_service.sh [install|uninstall|start|stop|restart|status]
 
-install   Render the launch agent plist into ~/Library/LaunchAgents,
-          then load/enable it via launchctl.
-uninstall Stop the agent (if running) and delete the plist.
-restart   Reload the agent after picking up any changes.
+install   Render the launch agent plist into ~/Library/LaunchAgents.
+start     Bootstraps + kicks off the launch agent immediately.
+stop      Boot out the agent (stops the server if we launched it).
+restart   stop + start.
 status    Print the current service state from launchctl.
+uninstall Stop the agent (if running) and delete the plist.
 EOF
 }
 
@@ -29,10 +30,22 @@ render_plist() {
   sed "s#__PROJECT_ROOT__#${PROJECT_ROOT}#g" "${TEMPLATE_FILE}" > "${TARGET_PLIST}"
 }
 
-bootstrap_agent() {
+ensure_plist_exists() {
+  if [[ ! -f "${TARGET_PLIST}" ]]; then
+    echo "Launch agent plist not found. Run install first." >&2
+    exit 1
+  fi
+}
+
+start_agent() {
+  ensure_plist_exists
   launchctl bootout "${SERVICE_TARGET}" >/dev/null 2>&1 || true
   launchctl bootstrap "gui/$UID" "${TARGET_PLIST}"
-  launchctl enable "${SERVICE_TARGET}"
+  launchctl kickstart -k "${SERVICE_TARGET}"
+}
+
+stop_agent() {
+  launchctl bootout "${SERVICE_TARGET}" >/dev/null 2>&1 || true
 }
 
 case "${ACTION}" in
@@ -42,27 +55,30 @@ case "${ACTION}" in
       exit 1
     fi
     render_plist
-    bootstrap_agent
     echo "Installed Parakeet launch agent at ${TARGET_PLIST}."
-    echo "Logs: /tmp/parakeet.log"
+    echo "Use 'start' to run it manually or open the ASR app (it auto-starts the agent)."
     ;;
   uninstall)
-    launchctl bootout "${SERVICE_TARGET}" >/dev/null 2>&1 || true
+    stop_agent
     if [[ -f "${TARGET_PLIST}" ]]; then
       rm "${TARGET_PLIST}"
       echo "Removed ${TARGET_PLIST}"
     fi
     ;;
+  start)
+    start_agent
+    echo "Started ${SERVICE_LABEL} via launchctl."
+    ;;
+  stop)
+    stop_agent
+    echo "Stopped ${SERVICE_LABEL}."
+    ;;
   restart)
-    if [[ -f "${TARGET_PLIST}" ]]; then
-      bootstrap_agent
-      echo "Restarted ${SERVICE_LABEL}."
-    else
-      echo "Launch agent plist is missing. Run install first." >&2
-      exit 1
-    fi
+    start_agent
+    echo "Restarted ${SERVICE_LABEL}."
     ;;
   status)
+    ensure_plist_exists
     launchctl print "${SERVICE_TARGET}"
     ;;
   *)
