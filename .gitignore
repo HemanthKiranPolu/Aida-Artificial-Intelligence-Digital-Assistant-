@@ -1,5 +1,6 @@
 .DS_Store
 nemo-env/
 models/
+__pycache__/
 *.nemo
 *.wav
