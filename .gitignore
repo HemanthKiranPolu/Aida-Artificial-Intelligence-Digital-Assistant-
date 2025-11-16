@@ -1,0 +1,5 @@
+.DS_Store
+nemo-env/
+models/
+*.nemo
+*.wav
