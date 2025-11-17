@@ -33,6 +33,13 @@ HOST="${HOST:-0.0.0.0}"
 echo "Using MODEL_PATH=${MODEL_PATH}"
 echo "Starting Parakeet FastAPI server on ${HOST}:${PORT}"
 
+if command -v lsof >/dev/null 2>&1; then
+  if lsof -ti tcp:"${PORT}" >/dev/null 2>&1; then
+    echo "A process is already listening on port ${PORT}. Skipping new server launch." >&2
+    exit 0
+  fi
+fi
+
 exec uvicorn parakeet_fastapi.server:app \
   --host "${HOST}" \
   --port "${PORT}" \
