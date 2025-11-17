@@ -12,20 +12,28 @@ struct ContentView: View {
     var body: some View {
         ZStack {
             Color.clear
-            VStack(spacing: 18) {
+            VStack(spacing: 12) {
                 heroBar
+                if viewModel.needsMicrophonePermission {
+                    PermissionBanner(
+                        requestAction: { Task { await viewModel.prepareMicrophonePermissionIfNeeded() } },
+                        settingsAction: viewModel.openMicrophoneSettings
+                    )
+                }
                 commandBar
                 transcriptPanel
                 answerPanel
             }
             .padding(16)
-            .frame(width: 560)
+            .frame(width: 460)
             .background(
                 RoundedRectangle(cornerRadius: 26, style: .continuous)
                     .fill(Color.black.opacity(0.82))
                     .shadow(color: Color.black.opacity(0.45), radius: 40, x: 0, y: 18)
             )
-            .padding(12)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 16)
+            .fixedSize()
         }
         .background(Color.clear)
         .onAppear(perform: configureWindow)
@@ -39,15 +47,14 @@ struct ContentView: View {
     }
 
     private var heroBar: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 20) {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
                 Label("AIDA", systemImage: "sparkles.tv")
-                    .font(.title2.weight(.semibold))
-                Divider()
-                    .frame(height: 28)
-                VStack(alignment: .leading, spacing: 2) {
+                    .font(.title3.weight(.semibold))
+                    .padding(.trailing, 6)
+                VStack(alignment: .leading, spacing: 4) {
                     Text(viewModel.isRecording ? "Listening…" : "Ready")
-                        .font(.headline)
+                        .font(.subheadline.weight(.semibold))
                     Text(viewModel.statusMessage)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -56,7 +63,7 @@ struct ContentView: View {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     Text(viewModel.recordingDuration(until: context.date))
                         .font(.system(.body, design: .monospaced))
-                        .padding(.horizontal, 12)
+                        .padding(.horizontal, 15)
                         .padding(.vertical, 6)
                         .background(
                             Capsule().fill(Color.black.opacity(0.2))
@@ -72,18 +79,19 @@ struct ContentView: View {
                 }
             }
 
-            HStack(spacing: 12) {
+            HStack(spacing: 6) {
                 Picker("LLM Provider", selection: $viewModel.llmProvider) {
                     ForEach(LLMProvider.allCases) { provider in
                         Text(provider.shortName).tag(provider)
                     }
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 160)
+                .frame(width: 120)
 
                 TextField(viewModel.llmProvider == .openAI ? "Model (e.g. gpt-4o-mini)" : "Local model (e.g. llama3)", text: $viewModel.currentModel)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.body, design: .monospaced))
+                    .frame(maxWidth: .infinity)
 
                 Button {
                     showAdvancedSettings = true
@@ -92,6 +100,7 @@ struct ContentView: View {
                         .padding(.horizontal, 10)
                 }
                 .buttonStyle(.borderedProminent)
+                .controlSize(.small)
             }
         }
         .padding(16)
@@ -99,7 +108,7 @@ struct ContentView: View {
 
     private var commandBar: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 12) {
+            HStack(spacing: 8) {
                 Button(action: viewModel.toggleRecording) {
                     Label(viewModel.isRecording ? "Stop Listening" : "Start Listening",
                           systemImage: viewModel.isRecording ? "stop.circle.fill" : "mic.circle.fill")
@@ -107,7 +116,7 @@ struct ContentView: View {
                 }
                 .keyboardShortcut(.space)
                 .buttonStyle(.borderedProminent)
-                .controlSize(.large)
+                .controlSize(.regular)
 
                 Button(action: { Task { await viewModel.askAIManually() } }) {
                     Label("Answer Question", systemImage: "sparkles")
@@ -153,8 +162,8 @@ struct ContentView: View {
                 .background(
                     AutoHeightReader(text: viewModel.transcript,
                                      font: .system(.body, design: .monospaced),
-                                     minHeight: 44,
-                                     maxHeight: 80,
+                                     minHeight: 38,
+                                     maxHeight: 70,
                                      height: $transcriptEditorHeight)
                 )
 
@@ -177,13 +186,15 @@ struct ContentView: View {
     private var answerPanel: some View {
         SectionBox(title: "Answer Workspace") {
             VStack(alignment: .leading, spacing: 12) {
-                Text(viewModel.aiResponse.isEmpty ? "Answer text will render here as soon as AI responds." : viewModel.aiResponse)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .font(.system(.body, design: .rounded))
-                    .foregroundStyle(Color.white.opacity(0.92))
-                    .padding(16)
-                    .background(RoundedRectangle(cornerRadius: 16).fill(Color.white.opacity(0.06)))
-                    .frame(minHeight: dynamicHeight(for: viewModel.aiResponse))
+                ScrollView {
+                    Text(viewModel.aiResponse.isEmpty ? "Answer text will render here as soon as AI responds." : viewModel.aiResponse)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .font(.system(.body, design: .rounded))
+                        .foregroundStyle(Color.white.opacity(0.92))
+                        .padding(16)
+                        .background(RoundedRectangle(cornerRadius: 16).fill(Color.white.opacity(0.06)))
+                }
+                .frame(height: min(180, max(120, dynamicHeight(for: viewModel.aiResponse))))
 
                 HStack {
                     Text(viewModel.answerMetadata)
@@ -866,12 +877,12 @@ struct SectionBox<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 8) {
             Text(title)
                 .font(.headline)
             content
         }
-        .padding(18)
+        .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 14)
