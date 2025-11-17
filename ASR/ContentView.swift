@@ -5,188 +5,196 @@ import Combine
 
 struct ContentView: View {
     @StateObject private var viewModel = ASRViewModel()
+    @State private var showAdvancedSettings = false
+    @State private var showDeploymentNotes = false
+    @State private var transcriptEditorHeight: CGFloat = 140
 
     var body: some View {
-        VStack(spacing: 24) {
-            HStack(alignment: .top, spacing: 24) {
-                captureSection
-                settingsSection
+        ZStack {
+            Color.clear
+            VStack(spacing: 18) {
+                heroBar
+                commandBar
+                transcriptPanel
+                answerPanel
             }
-            resultsSection
-            architectureSection
+            .padding(16)
+            .frame(width: 560)
+            .background(
+                RoundedRectangle(cornerRadius: 26, style: .continuous)
+                    .fill(Color.black.opacity(0.82))
+                    .shadow(color: Color.black.opacity(0.45), radius: 40, x: 0, y: 18)
+            )
+            .padding(12)
         }
-        .padding(24)
-        .frame(minWidth: 960, minHeight: 680)
+        .background(Color.clear)
+        .onAppear(perform: configureWindow)
+        .sheet(isPresented: $showAdvancedSettings) {
+            AdvancedSettingsView(viewModel: viewModel, showDeploymentNotes: $showDeploymentNotes)
+                .frame(minWidth: 520, minHeight: 480)
+        }
         .task {
             await viewModel.prepareMicrophonePermissionIfNeeded()
         }
     }
 
-    private var captureSection: some View {
-        SectionBox(title: "Capture & Transcribe") {
-            if viewModel.needsMicrophonePermission {
-                VStack(alignment: .leading, spacing: 8) {
-                    Label("Microphone access is required before recording.", systemImage: "exclamationmark.triangle")
-                        .font(.callout)
-                        .foregroundStyle(.orange)
-                    HStack {
-                        Button("Request Permission Again") {
-                            Task { await viewModel.prepareMicrophonePermissionIfNeeded() }
-                        }
-                        Button("Open Settings") {
-                            viewModel.openMicrophoneSettings()
-                        }
-                    }
-                }
-            }
-
-            Text(viewModel.statusMessage)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            HStack(spacing: 12) {
-                Button(action: viewModel.toggleRecording) {
-                    Label(viewModel.isRecording ? "Stop Recording" : "Start Recording",
-                          systemImage: viewModel.isRecording ? "stop.circle" : "mic.circle")
-                }
-                .keyboardShortcut(.space)
-                .buttonStyle(.borderedProminent)
-
-                Button(action: {
-                    Task { await viewModel.askAIManually() }
-                }) {
-                    Label("Ask AI Again", systemImage: "bolt.horizontal.circle")
-                }
-                .disabled(viewModel.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.isProcessing)
-            }
-
-            Toggle("Ask AI automatically after every transcription", isOn: $viewModel.shouldAutoAsk)
-
-            if viewModel.isProcessing {
-                ProgressView("Processing audio / AI...")
-            }
-        }
-    }
-
-    private var settingsSection: some View {
-        SectionBox(title: "Backend Settings") {
-            VStack(alignment: .leading, spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Parakeet / ASR endpoint")
+    private var heroBar: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 20) {
+                Label("AIDA", systemImage: "sparkles.tv")
+                    .font(.title2.weight(.semibold))
+                Divider()
+                    .frame(height: 28)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(viewModel.isRecording ? "Listening…" : "Ready")
+                        .font(.headline)
+                    Text(viewModel.statusMessage)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    TextField("http://127.0.0.1:8000/transcribe", text: $viewModel.serverURLString)
-                        .textFieldStyle(.roundedBorder)
+                }
+                Spacer()
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text(viewModel.recordingDuration(until: context.date))
                         .font(.system(.body, design: .monospaced))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(
+                            Capsule().fill(Color.black.opacity(0.2))
+                        )
                 }
 
+                if viewModel.isRecording {
+                    StatusBadge(text: "Listening", color: .red)
+                } else if viewModel.isProcessing {
+                    StatusBadge(text: "Processing", color: .orange)
+                } else {
+                    StatusBadge(text: "Idle", color: .green)
+                }
+            }
+
+            HStack(spacing: 12) {
                 Picker("LLM Provider", selection: $viewModel.llmProvider) {
                     ForEach(LLMProvider.allCases) { provider in
-                        Text(provider.rawValue).tag(provider)
+                        Text(provider.shortName).tag(provider)
                     }
                 }
                 .pickerStyle(.segmented)
+                .frame(width: 160)
 
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Model name")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    TextField(viewModel.llmProvider == .openAI ? "gpt-4o-mini" : "llama3", text: $viewModel.currentModel)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(.body, design: .monospaced))
+                TextField(viewModel.llmProvider == .openAI ? "Model (e.g. gpt-4o-mini)" : "Local model (e.g. llama3)", text: $viewModel.currentModel)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.body, design: .monospaced))
+
+                Button {
+                    showAdvancedSettings = true
+                } label: {
+                    Label("Models & Settings", systemImage: "slider.horizontal.3")
+                        .padding(.horizontal, 10)
                 }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(16)
+    }
 
-                if viewModel.llmProvider == .openAI {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("OpenAI API key")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        SecureField("sk-...", text: $viewModel.openAIKey)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(.body, design: .monospaced))
-                    }
-                } else {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Local LLM endpoint")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        TextField("http://127.0.0.1:11434/v1/chat/completions", text: $viewModel.localLLMURLString)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(.body, design: .monospaced))
-                    }
-                    HStack(spacing: 12) {
-                        Button {
-                            Task { await viewModel.detectLocalModels() }
-                        } label: {
-                            Label("Detect Local Models", systemImage: "waveform.badge.mic")
-                        }
-                        .disabled(viewModel.isDetectingLocalModels)
+    private var commandBar: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                Button(action: viewModel.toggleRecording) {
+                    Label(viewModel.isRecording ? "Stop Listening" : "Start Listening",
+                          systemImage: viewModel.isRecording ? "stop.circle.fill" : "mic.circle.fill")
+                        .fontWeight(.semibold)
+                }
+                .keyboardShortcut(.space)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
 
-                        if viewModel.isDetectingLocalModels {
-                            ProgressView()
-                                .scaleEffect(0.7)
-                        } else if viewModel.llmProvider == .local && !viewModel.availableLocalModels.isEmpty {
-                            Menu("Choose detected model") {
-                                ForEach(viewModel.availableLocalModels, id: \.self) { model in
-                                    Button(model) { viewModel.currentModel = model }
-                                }
-                            }
-                        }
-                    }
-                    if !viewModel.localDetectionMessage.isEmpty {
-                        Text(viewModel.localDetectionMessage)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                Button(action: { Task { await viewModel.askAIManually() } }) {
+                    Label("Answer Question", systemImage: "sparkles")
+                }
+                .buttonStyle(.bordered)
+                .disabled(viewModel.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.isProcessing)
+
+                Button(action: viewModel.clearWorkspace) {
+                    Label("Clear", systemImage: "trash")
+                }
+                .buttonStyle(.bordered)
+                .tint(.secondary)
+
+                Spacer()
+            }
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 18)
+                .fill(Color.black.opacity(0.06))
+        )
+    }
+
+    private var transcriptPanel: some View {
+        SectionBox(title: "Live Transcript (editable)") {
+            VStack(alignment: .leading, spacing: 12) {
+                ZStack(alignment: .topLeading) {
+                    TextEditor(text: $viewModel.transcript)
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(Color.white.opacity(0.92))
+                        .frame(height: transcriptEditorHeight)
+                        .padding(.horizontal, 8)
+                        .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.05)))
+
+                    if viewModel.transcript.isEmpty {
+                        Text("Start speaking or type here...")
+                            .foregroundStyle(Color.white.opacity(0.4))
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .allowsHitTesting(false)
                     }
                 }
+                .background(
+                    AutoHeightReader(text: viewModel.transcript,
+                                     font: .system(.body, design: .monospaced),
+                                     minHeight: 44,
+                                     maxHeight: 80,
+                                     height: $transcriptEditorHeight)
+                )
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("System prompt")
-                        .font(.caption)
+                HStack {
+                    Text("\(viewModel.transcript.count) characters")
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
-                    TextEditor(text: $viewModel.systemPrompt)
-                        .font(.system(.body, design: .monospaced))
-                        .frame(height: 90)
-                        .padding(6)
-                        .background(RoundedRectangle(cornerRadius: 8).stroke(.tertiary, lineWidth: 1))
+                    Spacer()
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(viewModel.transcript, forType: .string)
+                    } label: {
+                        Label("Copy", systemImage: "doc.on.doc")
+                    }
                 }
             }
         }
     }
 
-    private var resultsSection: some View {
-        HStack(alignment: .top, spacing: 24) {
-            SectionBox(title: "Latest Transcript") {
-                TextEditor(text: $viewModel.transcript)
-                    .font(.system(.body, design: .monospaced))
-                    .frame(minHeight: 160)
-                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(.quinary, lineWidth: 1))
-                HStack {
-                    Text("Characters: \(viewModel.transcript.count)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Copy") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(viewModel.transcript, forType: .string)
-                    }
-                    .disabled(viewModel.transcript.isEmpty)
-                }
-            }
+    private var answerPanel: some View {
+        SectionBox(title: "Answer Workspace") {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(viewModel.aiResponse.isEmpty ? "Answer text will render here as soon as AI responds." : viewModel.aiResponse)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .font(.system(.body, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.92))
+                    .padding(16)
+                    .background(RoundedRectangle(cornerRadius: 16).fill(Color.white.opacity(0.06)))
+                    .frame(minHeight: dynamicHeight(for: viewModel.aiResponse))
 
-            SectionBox(title: "AI Answer") {
-                TextEditor(text: $viewModel.aiResponse)
-                    .font(.system(.body, design: .monospaced))
-                    .frame(minHeight: 160)
-                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(.quinary, lineWidth: 1))
                 HStack {
                     Text(viewModel.answerMetadata)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Button("Copy") {
+                    Button {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(viewModel.aiResponse, forType: .string)
+                    } label: {
+                        Label("Copy Answer", systemImage: "doc.on.doc")
                     }
                     .disabled(viewModel.aiResponse.isEmpty)
                 }
@@ -194,29 +202,8 @@ struct ContentView: View {
         }
     }
 
-    private var architectureSection: some View {
-        SectionBox(title: "Deployment Notes") {
-            VStack(alignment: .leading, spacing: 12) {
-                Label("Run NVIDIA Parakeet locally with \"parakeet-tdt-0.6b-v2\" for < 1 s latency.", systemImage: "waveform")
-                    .font(.callout)
-                Text("Example: `uvicorn parakeet_fastapi.server:app --reload --host 0.0.0.0 --port 8000` after downloading model checkpoints.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Label("Configure a GPU-backed box or your Mac's AVFoundation pipeline for recording.", systemImage: "display.and.arrow.down")
-                    .font(.callout)
-
-                Label("Forward transcripts to GPT-4o or a local llama.cpp / Ollama endpoint.", systemImage: "brain.head.profile")
-                    .font(.callout)
-
-                Label("Optional: swap the ASR endpoint with FluidAudio/CoreML for a fully on-device Apple Silicon path.", systemImage: "cpu")
-                    .font(.callout)
-
-                Text("Set the endpoints above according to where your ASR FastAPI + LLM services run. This app never leaves your machine unless you point it to a remote host.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
+    private var settingsDrawer: some View {
+        EmptyView()
     }
 }
 
@@ -234,12 +221,14 @@ final class ASRViewModel: ObservableObject {
 
     @Published var isRecording = false
     @Published var shouldAutoAsk = true
+    @Published var autoStopOnSilence = true
     @Published var transcript: String = ""
     @Published var aiResponse: String = ""
     @Published var statusMessage: String = "Idle"
     @Published var answerMetadata: String = ""
     @Published var isProcessing = false
     @Published var needsMicrophonePermission = false
+    @Published var recordingStartedAt: Date?
 
     @Published var serverURLString: String = ASRViewModel.defaultServerURL {
         didSet {
@@ -292,15 +281,36 @@ final class ASRViewModel: ObservableObject {
         await runLLM(with: cleaned, manageProcessingFlag: true)
     }
 
+    func clearWorkspace() {
+        transcript = ""
+        aiResponse = ""
+        answerMetadata = ""
+        statusMessage = "Cleared."
+        recordingStartedAt = nil
+    }
+
+    func recordingDuration(until referenceDate: Date = Date()) -> String {
+        guard let start = recordingStartedAt else {
+            return "00:00"
+        }
+        let interval = max(0, referenceDate.timeIntervalSince(start))
+        let minutes = Int(interval) / 60
+        let seconds = Int(interval) % 60
+        return String(format: "%02d:%02d", minutes, seconds)
+    }
+
     private func startRecording() {
         do {
-            try recorder.startRecording()
+            try recorder.startRecording(autoStopHandler: autoStopOnSilence ? { [weak self] url in
+                self?.handleAutoStoppedRecording(fileURL: url)
+            } : nil)
             transcript = ""
             aiResponse = ""
             answerMetadata = ""
             isRecording = true
             statusMessage = "Recording... Tap stop to send to ASR."
             needsMicrophonePermission = false
+            recordingStartedAt = Date()
         } catch {
             statusMessage = "Recording failed: \(error.localizedDescription)"
             if error is AudioRecorderError {
@@ -313,17 +323,44 @@ final class ASRViewModel: ObservableObject {
         guard let fileURL = recorder.stopRecording() else {
             statusMessage = "No audio file produced."
             isRecording = false
+            recordingStartedAt = nil
             return
         }
         isRecording = false
+        recordingStartedAt = nil
         statusMessage = "Uploading audio to ASR..."
         Task {
             await transcribeAndAnswer(using: fileURL)
         }
     }
 
+    private func handleAutoStoppedRecording(fileURL: URL?) {
+        guard let fileURL = fileURL else {
+            statusMessage = "Silence detected but no audio captured."
+            isRecording = false
+            recordingStartedAt = nil
+            return
+        }
+        guard isRecording else { return }
+        isRecording = false
+        recordingStartedAt = nil
+        statusMessage = "Silence detected. Uploading audio..."
+        Task {
+            await transcribeAndAnswer(using: fileURL)
+        }
+    }
+
     private func transcribeAndAnswer(using url: URL) async {
-        guard let endpoint = URL(string: serverURLString) else {
+        let trimmed = serverURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedEndpointString: String
+        if trimmed.isEmpty {
+            resolvedEndpointString = ASRViewModel.defaultServerURL
+            serverURLString = resolvedEndpointString
+        } else {
+            resolvedEndpointString = trimmed
+        }
+
+        guard let endpoint = URL(string: resolvedEndpointString) else {
             statusMessage = "Invalid ASR endpoint URL."
             return
         }
@@ -491,6 +528,11 @@ enum LLMProvider: String, CaseIterable, Identifiable {
 final class AudioRecorder {
     private var recorder: AVAudioRecorder?
     private var currentURL: URL?
+    private var silenceTimer: Timer?
+    private var silenceStart: Date?
+    private var autoStopHandler: ((URL?) -> Void)?
+    private let silenceThreshold: Float = -45
+    private let requiredSilenceDuration: TimeInterval = 1.5
 
     func prepareMicrophonePermission() async throws {
         let status = AVCaptureDevice.authorizationStatus(for: .audio)
@@ -511,7 +553,7 @@ final class AudioRecorder {
         }
     }
 
-    func startRecording() throws {
+    func startRecording(autoStopHandler: ((URL?) -> Void)? = nil) throws {
         try configureSession()
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("recording-\(UUID().uuidString).wav")
@@ -525,16 +567,23 @@ final class AudioRecorder {
             AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
         ]
         recorder = try AVAudioRecorder(url: url, settings: settings)
+        recorder?.isMeteringEnabled = autoStopHandler != nil
         recorder?.prepareToRecord()
         recorder?.record()
         currentURL = url
+        self.autoStopHandler = autoStopHandler
+        if autoStopHandler != nil {
+            startMonitoringSilence()
+        }
     }
 
     func stopRecording() -> URL? {
+        invalidateSilenceMonitoring()
         recorder?.stop()
         let url = currentURL
         recorder = nil
         currentURL = nil
+        autoStopHandler = nil
         return url
     }
 
@@ -556,6 +605,45 @@ final class AudioRecorder {
         @unknown default:
             throw AudioRecorderError.permissionDenied
         }
+    }
+
+    private func startMonitoringSilence() {
+        silenceTimer?.invalidate()
+        silenceTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            self?.evaluateSilence()
+        }
+        if let timer = silenceTimer {
+            RunLoop.main.add(timer, forMode: .common)
+        }
+    }
+
+    private func evaluateSilence() {
+        guard let recorder else { return }
+        recorder.updateMeters()
+        let power = recorder.averagePower(forChannel: 0)
+        if power < silenceThreshold {
+            if silenceStart == nil {
+                silenceStart = Date()
+            } else if let start = silenceStart, Date().timeIntervalSince(start) >= requiredSilenceDuration {
+                triggerAutoStop()
+            }
+        } else {
+            silenceStart = nil
+        }
+    }
+
+    private func triggerAutoStop() {
+        let handler = autoStopHandler
+        let url = stopRecording()
+        DispatchQueue.main.async {
+            handler?(url)
+        }
+    }
+
+    private func invalidateSilenceMonitoring() {
+        silenceTimer?.invalidate()
+        silenceTimer = nil
+        silenceStart = nil
     }
 }
 
@@ -783,13 +871,150 @@ struct SectionBox<Content: View>: View {
                 .font(.headline)
             content
         }
-        .padding(16)
+        .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 14)
-                .fill(Color(nsColor: .windowBackgroundColor).opacity(0.6))
-                .shadow(color: Color.black.opacity(0.05), radius: 6, x: 0, y: 3)
+                .fill(Color.white.opacity(0.05))
+                .shadow(color: Color.black.opacity(0.25), radius: 12, x: 0, y: 8)
         )
+    }
+}
+
+struct PermissionBanner: View {
+    let requestAction: () -> Void
+    let settingsAction: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Microphone access is required before recording.", systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            HStack {
+                Button("Request Permission Again", action: requestAction)
+                Button("Open Settings", action: settingsAction)
+            }
+            .buttonStyle(.bordered)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.orange.opacity(0.1))
+        )
+    }
+}
+
+struct SettingField<Content: View>: View {
+    let label: String
+    @ViewBuilder var field: () -> Content
+
+    init(_ label: String, @ViewBuilder content: @escaping () -> Content) {
+        self.label = label
+        self.field = content
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label.uppercased())
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            field()
+        }
+    }
+}
+
+struct SectionDivider: View {
+    var body: some View {
+        Divider()
+            .padding(.vertical, 4)
+    }
+}
+
+struct StatusBadge: View {
+    let text: String
+    let color: Color
+
+    var body: some View {
+        Text(text)
+            .font(.footnote.weight(.semibold))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(
+                Capsule().fill(color.opacity(0.15))
+            )
+            .foregroundStyle(color)
+    }
+}
+
+struct ResponsiveStack<Content: View>: View {
+    let spacing: CGFloat
+    @ViewBuilder var content: () -> Content
+
+    init(spacing: CGFloat = 16, @ViewBuilder content: @escaping () -> Content) {
+        self.spacing = spacing
+        self.content = content
+    }
+
+    var body: some View {
+        ViewThatFits {
+            HStack(alignment: .top, spacing: spacing) {
+                content()
+            }
+            VStack(alignment: .leading, spacing: spacing) {
+                content()
+            }
+        }
+    }
+}
+
+struct AutoHeightReader: View {
+    let text: String
+    let font: Font
+    let minHeight: CGFloat
+    let maxHeight: CGFloat
+    @Binding var height: CGFloat
+
+    var body: some View {
+        Text(text.isEmpty ? " " : text + "\n")
+            .font(font)
+            .foregroundColor(.clear)
+            .padding(.horizontal, 12)
+            .background(
+                GeometryReader { proxy in
+                    Color.clear
+                        .onAppear {
+                            height = clampHeight(proxy.size.height)
+                        }
+                        .onChange(of: proxy.size.height) { _, newValue in
+                            height = clampHeight(newValue)
+                        }
+                }
+            )
+    }
+
+    private func clampHeight(_ raw: CGFloat) -> CGFloat {
+        min(maxHeight, max(minHeight, raw + 24))
+    }
+}
+
+private func dynamicHeight(for text: String) -> CGFloat {
+    let charactersPerLine: Double = 70
+    let lines = max(1, ceil(Double(max(1, text.count)) / charactersPerLine))
+    let height = lines * 28
+    return CGFloat(min(320, max(120, height)))
+}
+
+extension ContentView {
+    private func configureWindow() {
+        guard let window = NSApplication.shared.windows.first else { return }
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.isMovableByWindowBackground = true
+        window.styleMask.remove(.resizable)
+        window.standardWindowButton(.closeButton)?.isHidden = true
+        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        window.standardWindowButton(.zoomButton)?.isHidden = true
     }
 }
 
