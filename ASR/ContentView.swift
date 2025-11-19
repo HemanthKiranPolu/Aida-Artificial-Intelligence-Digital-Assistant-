@@ -8,6 +8,7 @@ struct ContentView: View {
     @State private var showAdvancedSettings = false
     @State private var showDeploymentNotes = false
     @State private var transcriptEditorHeight: CGFloat = 140
+    @State private var commandDShortcutMonitor: Any?
 
     var body: some View {
         ZStack {
@@ -36,7 +37,11 @@ struct ContentView: View {
             .fixedSize()
         }
         .background(Color.clear)
-        .onAppear(perform: configureWindow)
+        .onAppear {
+            configureWindow()
+            registerCommandDShortcut()
+        }
+        .onDisappear(perform: removeCommandDShortcut)
         .sheet(isPresented: $showAdvancedSettings) {
             AdvancedSettingsView(viewModel: viewModel, showDeploymentNotes: $showDeploymentNotes)
                 .frame(minWidth: 520, minHeight: 480)
@@ -1015,6 +1020,26 @@ private func dynamicHeight(for text: String) -> CGFloat {
 }
 
 extension ContentView {
+    private func registerCommandDShortcut() {
+        guard commandDShortcutMonitor == nil else { return }
+        commandDShortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let modifierFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            guard modifierFlags.contains(.command),
+                  !event.isARepeat,
+                  event.charactersIgnoringModifiers?.lowercased() == "d" else {
+                return event
+            }
+            viewModel.toggleRecording()
+            return nil
+        }
+    }
+
+    private func removeCommandDShortcut() {
+        guard let monitor = commandDShortcutMonitor else { return }
+        NSEvent.removeMonitor(monitor)
+        commandDShortcutMonitor = nil
+    }
+
     private func configureWindow() {
         guard let window = NSApplication.shared.windows.first else { return }
         window.isOpaque = false
