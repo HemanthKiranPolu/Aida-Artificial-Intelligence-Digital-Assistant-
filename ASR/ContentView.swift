@@ -8,40 +8,32 @@ struct ContentView: View {
     @State private var showAdvancedSettings = false
     @State private var showDeploymentNotes = false
     @State private var transcriptEditorHeight: CGFloat = 140
-    @State private var commandDShortcutMonitor: Any?
+    @State private var keyboardShortcutMonitor: Any?
+    @State private var layout = CoachOverlayLayout.preferred(for: NSScreen.main)
+    @State private var isOverlayHidden = false
+
+    private let collapsedOverlaySize = CGSize(width: 240, height: 150)
 
     var body: some View {
-        ZStack {
-            Color.clear
-            VStack(spacing: 12) {
-                heroBar
-                if viewModel.needsMicrophonePermission {
-                    PermissionBanner(
-                        requestAction: { Task { await viewModel.prepareMicrophonePermissionIfNeeded() } },
-                        settingsAction: viewModel.openMicrophoneSettings
-                    )
-                }
-                commandBar
-                transcriptPanel
-                answerPanel
+        let targetSize = isOverlayHidden ? collapsedOverlaySize : layout.size
+        Group {
+            if isOverlayHidden {
+                collapsedOverlay
+            } else {
+                expandedOverlay
             }
-            .padding(16)
-            .frame(width: 460)
-            .background(
-                RoundedRectangle(cornerRadius: 26, style: .continuous)
-                    .fill(Color.black.opacity(0.82))
-                    .shadow(color: Color.black.opacity(0.45), radius: 40, x: 0, y: 18)
-            )
-            .padding(.horizontal, 12)
-            .padding(.vertical, 16)
-            .fixedSize()
         }
+        .frame(width: targetSize.width, height: targetSize.height)
         .background(Color.clear)
         .onAppear {
             configureWindow()
-            registerCommandDShortcut()
+            registerKeyboardShortcuts()
+            refreshLayout()
         }
-        .onDisappear(perform: removeCommandDShortcut)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
+            refreshLayout()
+        }
+        .onDisappear(perform: removeKeyboardShortcuts)
         .sheet(isPresented: $showAdvancedSettings) {
             AdvancedSettingsView(viewModel: viewModel, showDeploymentNotes: $showDeploymentNotes)
                 .frame(minWidth: 520, minHeight: 480)
@@ -51,175 +43,383 @@ struct ContentView: View {
         }
     }
 
-    private var heroBar: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Label("AIDA", systemImage: "sparkles.tv")
-                    .font(.title3.weight(.semibold))
-                    .padding(.trailing, 6)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(viewModel.isRecording ? "Listening…" : "Ready")
-                        .font(.subheadline.weight(.semibold))
-                    Text(viewModel.statusMessage)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+    private var expandedOverlay: some View {
+        ZStack {
+            VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow)
+                .clipShape(RoundedRectangle(cornerRadius: layout.cornerRadius, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: layout.cornerRadius, style: .continuous)
+                        .stroke(Color.white.opacity(0.15), lineWidth: 1)
+                )
+                .shadow(color: Color.black.opacity(0.35), radius: 40, x: 0, y: 24)
+
+            VStack(spacing: 18) {
+                header
+
+                if viewModel.needsMicrophonePermission {
+                    PermissionBanner(
+                        requestAction: { Task { await viewModel.prepareMicrophonePermissionIfNeeded() } },
+                        settingsAction: viewModel.openMicrophoneSettings
+                    )
                 }
-                Spacer()
-                TimelineView(.periodic(from: .now, by: 1)) { context in
-                    Text(viewModel.recordingDuration(until: context.date))
-                        .font(.system(.body, design: .monospaced))
-                        .padding(.horizontal, 15)
-                        .padding(.vertical, 6)
+
+                providerRow
+                controlRow
+                automationRow
+                workspaceStack
+            }
+            .padding(layout.padding)
+        }
+    }
+
+    private var collapsedOverlay: some View {
+        ZStack {
+            VisualEffectBlur(material: .menu, blendingMode: .behindWindow)
+                .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+                .shadow(color: Color.black.opacity(0.3), radius: 20, x: 0, y: 8)
+
+            VStack(spacing: 12) {
+                Label("Overlay hidden", systemImage: "eye.slash")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text("Recording & AI continue running in the background.")
+                    .font(.caption)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+                Button {
+                    toggleOverlayVisibility()
+                } label: {
+                    Label("Reopen Overlay", systemImage: "rectangle.on.rectangle.angled")
+                        .font(.callout.weight(.semibold))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
                         .background(
-                            Capsule().fill(Color.black.opacity(0.2))
+                            VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow)
+                                .clipShape(Capsule())
                         )
                 }
-
-                if viewModel.isRecording {
-                    StatusBadge(text: "Listening", color: .red)
-                } else if viewModel.isProcessing {
-                    StatusBadge(text: "Processing", color: .orange)
-                } else {
-                    StatusBadge(text: "Idle", color: .green)
-                }
+                .keyboardShortcut("h", modifiers: [.command])
+                .buttonStyle(.plain)
             }
-
-            HStack(spacing: 6) {
-                Picker("LLM Provider", selection: $viewModel.llmProvider) {
-                    ForEach(LLMProvider.allCases) { provider in
-                        Text(provider.shortName).tag(provider)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 120)
-
-                TextField(viewModel.llmProvider == .openAI ? "Model (e.g. gpt-4o-mini)" : "Local model (e.g. llama3)", text: $viewModel.currentModel)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(.body, design: .monospaced))
-                    .frame(maxWidth: .infinity)
-
-                Button {
-                    showAdvancedSettings = true
-                } label: {
-                    Label("Models & Settings", systemImage: "slider.horizontal.3")
-                        .padding(.horizontal, 10)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-            }
+            .padding(20)
         }
-        .padding(16)
     }
 
-    private var commandBar: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Button(action: viewModel.toggleRecording) {
-                    Label(viewModel.isRecording ? "Stop Listening" : "Start Listening",
-                          systemImage: viewModel.isRecording ? "stop.circle.fill" : "mic.circle.fill")
-                        .fontWeight(.semibold)
-                }
-                .keyboardShortcut(.space)
-                .buttonStyle(.borderedProminent)
-                .controlSize(.regular)
-
-                Button(action: { Task { await viewModel.askAIManually() } }) {
-                    Label("Answer Question", systemImage: "sparkles")
-                }
-                .buttonStyle(.bordered)
-                .disabled(viewModel.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.isProcessing)
-
-                Button(action: viewModel.clearWorkspace) {
-                    Label("Clear", systemImage: "trash")
-                }
-                .buttonStyle(.bordered)
-                .tint(.secondary)
-
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 12) {
+                Label("AIDA Overlay", systemImage: "sparkles.tv")
+                    .font(.title3.weight(.semibold))
                 Spacer()
-            }
-        }
-        .padding(16)
-        .background(
-            RoundedRectangle(cornerRadius: 18)
-                .fill(Color.black.opacity(0.06))
-        )
-    }
-
-    private var transcriptPanel: some View {
-        SectionBox(title: "Live Transcript (editable)") {
-            VStack(alignment: .leading, spacing: 12) {
-                ZStack(alignment: .topLeading) {
-                    TextEditor(text: $viewModel.transcript)
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Label(viewModel.recordingDuration(until: context.date), systemImage: "clock")
                         .font(.system(.body, design: .monospaced))
-                        .foregroundStyle(Color.white.opacity(0.92))
-                        .frame(height: transcriptEditorHeight)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 6)
+                        .background(
+                            VisualEffectBlur(material: .menu, blendingMode: .behindWindow)
+                                .clipShape(Capsule())
+                        )
+                }
+                statusBadge
+                Button {
+                    toggleOverlayVisibility()
+                } label: {
+                    Label("Hide", systemImage: "eye.slash")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(
+                            VisualEffectBlur(material: .menu, blendingMode: .behindWindow)
+                                .clipShape(Capsule())
+                        )
+                }
+                .keyboardShortcut("h", modifiers: [.command])
+                .buttonStyle(.plain)
+            }
+
+            Text(viewModel.statusMessage)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var statusBadge: some View {
+        if viewModel.isRecording {
+            StatusBadge(text: "Listening", color: .red)
+        } else if viewModel.isProcessing {
+            StatusBadge(text: "Processing", color: .orange)
+        } else {
+            StatusBadge(text: "Idle", color: .green)
+        }
+    }
+
+    private var providerRow: some View {
+        HStack(spacing: 12) {
+            Menu {
+                ForEach(LLMProvider.allCases) { provider in
+                    Button {
+                        viewModel.llmProvider = provider
+                    } label: {
+                        Label(provider.rawValue, systemImage: viewModel.llmProvider == provider ? "checkmark" : "")
+                    }
+                }
+            } label: {
+                Label(viewModel.llmProvider.shortName, systemImage: "slider.horizontal.3")
+                    .font(.callout.weight(.semibold))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(
+                        VisualEffectBlur(material: .menu, blendingMode: .behindWindow)
+                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    )
+            }
+            .menuStyle(.borderlessButton)
+
+            TextField(
+                viewModel.llmProvider == .openAI ? "Model (e.g. gpt-4o-mini)" : "Local model (e.g. llama3)",
+                text: $viewModel.currentModel
+            )
+            .textFieldStyle(.plain)
+            .font(.system(.body, design: .monospaced))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(
+                VisualEffectBlur(material: .menu, blendingMode: .behindWindow)
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            )
+
+            Spacer(minLength: 0)
+
+            Button {
+                showAdvancedSettings = true
+            } label: {
+                Label("Models & Settings", systemImage: "slider.horizontal.3")
+                    .font(.callout.weight(.semibold))
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(
+                        VisualEffectBlur(material: .menu, blendingMode: .behindWindow)
+                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    )
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                toggleOverlayVisibility()
+            } label: {
+                Label("Hide", systemImage: "eye.slash")
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(
+                        VisualEffectBlur(material: .menu, blendingMode: .behindWindow)
+                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    )
+            }
+            .keyboardShortcut("h", modifiers: [.command])
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var controlRow: some View {
+        HStack(spacing: 12) {
+            Button(action: viewModel.toggleRecording) {
+                Label(viewModel.isRecording ? "Stop Listening" : "Start Listening",
+                      systemImage: viewModel.isRecording ? "stop.circle.fill" : "mic.circle.fill")
+                    .font(.title3.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+            }
+            .keyboardShortcut(.space)
+            .buttonStyle(.borderedProminent)
+            .tint(viewModel.isRecording ? .red : .green)
+
+            Button {
+                Task { await viewModel.askAIManually() }
+            } label: {
+                Label("Answer Question", systemImage: "sparkles")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(viewModel.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.isProcessing)
+
+            Button(role: .destructive, action: viewModel.clearWorkspace) {
+                Label("Clear", systemImage: "trash")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+        }
+    }
+
+    private var automationRow: some View {
+        HStack(spacing: 12) {
+            Toggle(isOn: $viewModel.shouldAutoAsk) {
+                Label("Auto ask AI", systemImage: "sparkles.rectangle.stack")
+            }
+            .toggleStyle(.button)
+            .buttonStyle(.borderedProminent)
+            .tint(.purple)
+
+            Toggle(isOn: $viewModel.autoStopOnSilence) {
+                Label("Auto stop on silence", systemImage: "waveform")
+            }
+            .toggleStyle(.button)
+            .buttonStyle(.borderedProminent)
+            .tint(.orange)
+
+            Spacer()
+
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(viewModel.transcript, forType: .string)
+            } label: {
+                Label("Copy Transcript", systemImage: "doc.on.doc")
+            }
+            .buttonStyle(.bordered)
+            .disabled(viewModel.transcript.isEmpty)
+        }
+    }
+
+    private var workspaceStack: some View {
+        ResponsiveStack(spacing: 18) {
+            transcriptCard
+            answerCard
+        }
+    }
+
+    private var transcriptCard: some View {
+        OverlayCard(title: "Live Transcript", systemImage: "waveform") {
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: $viewModel.transcript)
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundStyle(Color.white.opacity(0.92))
+                    .frame(height: transcriptEditorHeight)
+                    .padding(.top, 6)
+                    .padding(.horizontal, 6)
+                    .scrollContentBackground(.hidden)
+
+                if viewModel.transcript.isEmpty {
+                    Text("Start speaking or type here...")
+                        .foregroundStyle(Color.white.opacity(0.4))
                         .padding(.horizontal, 8)
-                        .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.05)))
-
-                    if viewModel.transcript.isEmpty {
-                        Text("Start speaking or type here...")
-                            .foregroundStyle(Color.white.opacity(0.4))
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 10)
-                            .allowsHitTesting(false)
-                    }
+                        .padding(.vertical, 12)
+                        .allowsHitTesting(false)
                 }
-                .background(
-                    AutoHeightReader(text: viewModel.transcript,
-                                     font: .system(.body, design: .monospaced),
-                                     minHeight: 38,
-                                     maxHeight: 70,
-                                     height: $transcriptEditorHeight)
-                )
-
-                HStack {
-                    Text("\(viewModel.transcript.count) characters")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(viewModel.transcript, forType: .string)
-                    } label: {
-                        Label("Copy", systemImage: "doc.on.doc")
-                    }
+            }
+            .background(
+                AutoHeightReader(text: viewModel.transcript,
+                                 font: .system(.body, design: .monospaced),
+                                 minHeight: 100,
+                                 maxHeight: 100,
+                                 height: $transcriptEditorHeight)
+            )
+        } footer: {
+            HStack {
+                Text("\(viewModel.transcript.count) characters")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(viewModel.transcript, forType: .string)
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
                 }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(viewModel.transcript.isEmpty)
             }
         }
     }
 
-    private var answerPanel: some View {
-        SectionBox(title: "Answer Workspace") {
-            VStack(alignment: .leading, spacing: 12) {
-                ScrollView {
-                    Text(viewModel.aiResponse.isEmpty ? "Answer text will render here as soon as AI responds." : viewModel.aiResponse)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .font(.system(.body, design: .rounded))
-                        .foregroundStyle(Color.white.opacity(0.92))
-                        .padding(16)
-                        .background(RoundedRectangle(cornerRadius: 16).fill(Color.white.opacity(0.06)))
+    private var answerCard: some View {
+        OverlayCard(title: "Answer Workspace", systemImage: "sparkles") {
+            ScrollView {
+                Text(viewModel.aiResponse.isEmpty ? "Answer text will render as soon as AI responds." : viewModel.aiResponse)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .font(.system(.body, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.92))
+                    .padding(16)
+                    .background(
+                        VisualEffectBlur(material: .popover, blendingMode: .behindWindow)
+                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    )
+            }
+            .frame(minHeight: layout.answerMinHeight, maxHeight: layout.answerMinHeight)
+        } footer: {
+            HStack {
+                Text(viewModel.answerMetadata.isEmpty ? "No metadata yet." : viewModel.answerMetadata)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(viewModel.aiResponse, forType: .string)
+                } label: {
+                    Label("Copy Answer", systemImage: "doc.on.doc")
                 }
-                .frame(height: min(180, max(120, dynamicHeight(for: viewModel.aiResponse))))
-
-                HStack {
-                    Text(viewModel.answerMetadata)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(viewModel.aiResponse, forType: .string)
-                    } label: {
-                        Label("Copy Answer", systemImage: "doc.on.doc")
-                    }
-                    .disabled(viewModel.aiResponse.isEmpty)
-                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(viewModel.aiResponse.isEmpty)
             }
         }
     }
 
-    private var settingsDrawer: some View {
-        EmptyView()
+}
+
+struct CoachOverlayLayout {
+    let size: CGSize
+    let cornerRadius: CGFloat = 28
+    let padding: CGFloat = 24
+
+    var answerMinHeight: CGFloat {
+        max(260, size.height * 0.45)
+    }
+
+    static func preferred(for screen: NSScreen?) -> CoachOverlayLayout {
+        let visibleSize = screen?.visibleFrame.size ?? CGSize(width: 1200, height: 800)
+        let width = clamp(visibleSize.width * 0.5, min: 600, max: min(visibleSize.width - 80, 980))
+        let height = clamp(visibleSize.height * 0.7, min: 520, max: min(visibleSize.height - 100, 860))
+        return CoachOverlayLayout(size: CGSize(width: width, height: height))
+    }
+
+    private static func clamp(_ value: CGFloat, min: CGFloat, max: CGFloat) -> CGFloat {
+        guard max >= min else { return value }
+        return Swift.max(min, Swift.min(max, value))
+    }
+}
+
+struct OverlayCard<Content: View, Footer: View>: View {
+    let title: String
+    let systemImage: String
+    private let contentBuilder: () -> Content
+    private let footerBuilder: () -> Footer
+
+    init(title: String,
+         systemImage: String,
+         @ViewBuilder content: @escaping () -> Content,
+         @ViewBuilder footer: @escaping () -> Footer) {
+        self.title = title
+        self.systemImage = systemImage
+        self.contentBuilder = content
+        self.footerBuilder = footer
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label(title, systemImage: systemImage)
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.secondary)
+            contentBuilder()
+            footerBuilder()
+        }
+        .padding(18)
+        .background(
+            VisualEffectBlur(material: .contentBackground, blendingMode: .behindWindow)
+                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        )
     }
 }
 
@@ -548,7 +748,9 @@ final class AudioRecorder {
     private var silenceStart: Date?
     private var autoStopHandler: ((URL?) -> Void)?
     private let silenceThreshold: Float = -45
+    private let silenceMargin: Float = 10
     private let requiredSilenceDuration: TimeInterval = 1.5
+    private var noiseFloor: Float?
 
     func prepareMicrophonePermission() async throws {
         let status = AVCaptureDevice.authorizationStatus(for: .audio)
@@ -589,6 +791,8 @@ final class AudioRecorder {
         currentURL = url
         self.autoStopHandler = autoStopHandler
         if autoStopHandler != nil {
+            noiseFloor = nil
+            silenceStart = nil
             startMonitoringSilence()
         }
     }
@@ -637,7 +841,23 @@ final class AudioRecorder {
         guard let recorder else { return }
         recorder.updateMeters()
         let power = recorder.averagePower(forChannel: 0)
-        if power < silenceThreshold {
+
+        if power < -25 {
+            if let existingFloor = noiseFloor {
+                noiseFloor = min(existingFloor, (existingFloor * 0.8) + (power * 0.2))
+            } else {
+                noiseFloor = power
+            }
+        }
+
+        let dynamicThreshold: Float
+        if let floor = noiseFloor {
+            dynamicThreshold = max(silenceThreshold, floor + silenceMargin)
+        } else {
+            dynamicThreshold = silenceThreshold
+        }
+
+        if power < dynamicThreshold {
             if silenceStart == nil {
                 silenceStart = Date()
             } else if let start = silenceStart, Date().timeIntervalSince(start) >= requiredSilenceDuration {
@@ -660,6 +880,7 @@ final class AudioRecorder {
         silenceTimer?.invalidate()
         silenceTimer = nil
         silenceStart = nil
+        noiseFloor = nil
     }
 }
 
@@ -872,31 +1093,6 @@ enum AudioRecorderError: LocalizedError {
     }
 }
 
-struct SectionBox<Content: View>: View {
-    let title: String
-    @ViewBuilder var content: Content
-
-    init(title: String, @ViewBuilder content: () -> Content) {
-        self.title = title
-        self.content = content()
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.headline)
-            content
-        }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 14)
-                .fill(Color.white.opacity(0.05))
-                .shadow(color: Color.black.opacity(0.25), radius: 12, x: 0, y: 8)
-        )
-    }
-}
-
 struct PermissionBanner: View {
     let requestAction: () -> Void
     let settingsAction: () -> Void
@@ -916,6 +1112,26 @@ struct PermissionBanner: View {
             RoundedRectangle(cornerRadius: 12)
                 .fill(Color.orange.opacity(0.1))
         )
+    }
+}
+
+struct VisualEffectBlur: NSViewRepresentable {
+    let material: NSVisualEffectView.Material
+    let blendingMode: NSVisualEffectView.BlendingMode
+    var state: NSVisualEffectView.State = .active
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = material
+        view.blendingMode = blendingMode
+        view.state = state
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = material
+        nsView.blendingMode = blendingMode
+        nsView.state = state
     }
 }
 
@@ -1012,32 +1228,44 @@ struct AutoHeightReader: View {
     }
 }
 
-private func dynamicHeight(for text: String) -> CGFloat {
-    let charactersPerLine: Double = 70
-    let lines = max(1, ceil(Double(max(1, text.count)) / charactersPerLine))
-    let height = lines * 28
-    return CGFloat(min(320, max(120, height)))
-}
-
 extension ContentView {
-    private func registerCommandDShortcut() {
-        guard commandDShortcutMonitor == nil else { return }
-        commandDShortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+    private func registerKeyboardShortcuts() {
+        guard keyboardShortcutMonitor == nil else { return }
+        keyboardShortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             let modifierFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             guard modifierFlags.contains(.command),
                   !event.isARepeat,
-                  event.charactersIgnoringModifiers?.lowercased() == "d" else {
+                  let character = event.charactersIgnoringModifiers?.lowercased().first else {
                 return event
             }
-            viewModel.toggleRecording()
-            return nil
+            switch character {
+            case "d":
+                viewModel.toggleRecording()
+                return nil
+            case "h":
+                toggleOverlayVisibility()
+                return nil
+            default:
+                return event
+            }
         }
     }
 
-    private func removeCommandDShortcut() {
-        guard let monitor = commandDShortcutMonitor else { return }
+    private func removeKeyboardShortcuts() {
+        guard let monitor = keyboardShortcutMonitor else { return }
         NSEvent.removeMonitor(monitor)
-        commandDShortcutMonitor = nil
+        keyboardShortcutMonitor = nil
+    }
+
+    private func refreshLayout() {
+        let screen = NSApplication.shared.windows.first?.screen ?? NSScreen.main
+        layout = CoachOverlayLayout.preferred(for: screen)
+    }
+
+    private func toggleOverlayVisibility() {
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+            isOverlayHidden.toggle()
+        }
     }
 
     private func configureWindow() {
@@ -1048,6 +1276,10 @@ extension ContentView {
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
         window.styleMask.remove(.resizable)
+        window.level = .floating
+        window.collectionBehavior.insert(.canJoinAllSpaces)
+        window.collectionBehavior.insert(.fullScreenAuxiliary)
+        window.collectionBehavior.insert(.ignoresCycle)
         window.standardWindowButton(.closeButton)?.isHidden = true
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
