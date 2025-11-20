@@ -2,6 +2,8 @@ import SwiftUI
 import AVFoundation
 import AppKit
 import Combine
+import Vision
+import ScreenCaptureKit
 
 struct ContentView: View {
     @StateObject private var viewModel = ASRViewModel()
@@ -269,6 +271,17 @@ struct ContentView: View {
             .buttonStyle(.borderedProminent)
             .tint(.orange)
 
+            Button {
+                viewModel.scanLeftHalfScreenAndAsk()
+            } label: {
+                Label("Scan Left Screen", systemImage: "macwindow.on.rectangle")
+                    .font(.callout.weight(.semibold))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(viewModel.isProcessing)
+
             Spacer()
 
             Button {
@@ -503,6 +516,24 @@ final class ASRViewModel: ObservableObject {
         answerMetadata = ""
         statusMessage = "Cleared."
         recordingStartedAt = nil
+    }
+
+    func scanLeftHalfScreenAndAsk() {
+        statusMessage = "Scanning the left half of the screen..."
+        Task {
+            do {
+                let recognized = try await ScreenTextScanner.captureLeftHalfScreenText()
+                let cleaned = recognized.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !cleaned.isEmpty else {
+                    statusMessage = "No readable text detected on the left half of the screen."
+                    return
+                }
+                transcript = cleaned
+                await runLLM(with: cleaned, manageProcessingFlag: true)
+            } catch {
+                statusMessage = "Screen scan failed: \(error.localizedDescription)"
+            }
+        }
     }
 
     func recordingDuration(until referenceDate: Date = Date()) -> String {
@@ -1089,6 +1120,90 @@ enum AudioRecorderError: LocalizedError {
         switch self {
         case .permissionDenied:
             return "Microphone permission denied. Enable it in System Settings ▸ Privacy & Security ▸ Microphone."
+        }
+    }
+}
+
+enum ScreenTextScannerError: LocalizedError {
+    case captureFailed
+    case recognitionFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .captureFailed:
+            return "Unable to capture the left side of the screen. Ensure screen recording permissions are granted."
+        case .recognitionFailed:
+            return "No text could be recognized from the captured screen area."
+        }
+    }
+}
+
+@MainActor
+struct ScreenTextScanner {
+    static func captureLeftHalfScreenText() async throws -> String {
+        let image = try await captureLeftHalfImage()
+        return try await recognizeText(in: image)
+    }
+
+    private static func captureLeftHalfImage() async throws -> CGImage {
+        guard let screen = NSScreen.main else {
+            throw ScreenTextScannerError.captureFailed
+        }
+        let captureRect = CGRect(
+            x: screen.frame.minX,
+            y: screen.frame.minY,
+            width: screen.frame.width / 2,
+            height: screen.frame.height
+        )
+
+        return try await withCheckedThrowingContinuation { continuation in
+            if #available(macOS 15.2, *) {
+                SCScreenshotManager.captureImage(in: captureRect) { image, error in
+                    if let image = image {
+                        continuation.resume(returning: image)
+                    } else {
+                        continuation.resume(throwing: error ?? ScreenTextScannerError.captureFailed)
+                    }
+                }
+            } else {
+                continuation.resume(throwing: ScreenTextScannerError.captureFailed)
+            }
+        }
+    }
+
+    private static func recognizeText(in image: CGImage) async throws -> String {
+        try await withCheckedThrowingContinuation { continuation in
+            let request = VNRecognizeTextRequest { request, error in
+                if let error = error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                guard let observations = request.results as? [VNRecognizedTextObservation] else {
+                    continuation.resume(throwing: ScreenTextScannerError.recognitionFailed)
+                    return
+                }
+                let recognizedStrings = observations
+                    .compactMap { $0.topCandidates(1).first?.string }
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                guard !recognizedStrings.isEmpty else {
+                    continuation.resume(throwing: ScreenTextScannerError.recognitionFailed)
+                    return
+                }
+                continuation.resume(returning: recognizedStrings.joined(separator: "\n"))
+            }
+            request.recognitionLevel = .accurate
+            request.usesLanguageCorrection = true
+            request.minimumTextHeight = 0.01
+
+            let handler = VNImageRequestHandler(cgImage: image, options: [:])
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    try handler.perform([request])
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
         }
     }
 }
