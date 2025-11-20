@@ -64,7 +64,6 @@ struct ContentView: View {
                     )
                 }
 
-                providerRow
                 controlRow
                 workspaceStack
             }
@@ -106,80 +105,26 @@ struct ContentView: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 12) {
-                Label("AIDA Overlay", systemImage: "sparkles.tv")
-                    .font(.title3.weight(.semibold))
-
-                Divider()
-                    .frame(height: 24)
-                    .background(Color.white.opacity(0.2))
-
-                TimelineView(.periodic(from: .now, by: 1)) { context in
-                    Label(viewModel.recordingDuration(until: context.date), systemImage: "clock")
-                        .font(.system(.body, design: .monospaced))
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 6)
-                        .background(
-                            VisualEffectBlur(material: .menu, blendingMode: .behindWindow)
-                                .clipShape(Capsule())
-                        )
-                }
-
-                statusBadge
-
-                Divider()
-                    .frame(height: 24)
-                    .background(Color.white.opacity(0.2))
-
-                Button {
-                    viewModel.scanLeftHalfScreenAndAsk()
-                } label: {
-                    Label("Scan Left Screen", systemImage: "macwindow.on.rectangle")
-                        .font(.callout.weight(.semibold))
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(
-                            VisualEffectBlur(material: .menu, blendingMode: .behindWindow)
-                                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                        )
-                }
-                .buttonStyle(.plain)
-                .disabled(viewModel.isProcessing)
-
-                Spacer()
-
-                Button {
-                    toggleOverlayVisibility()
-                } label: {
-                    Label("Hide", systemImage: "eye.slash")
-                        .font(.caption.weight(.semibold))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(
-                            VisualEffectBlur(material: .menu, blendingMode: .behindWindow)
-                                .clipShape(Capsule())
-                        )
-                }
-                .keyboardShortcut("h", modifiers: [.command])
-                .buttonStyle(.plain)
+        HStack(spacing: 10) {
+            statusBadge
+            Text(viewModel.statusMessage)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button {
+                toggleOverlayVisibility()
+            } label: {
+                Label("Hide", systemImage: "eye.slash")
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(
+                        VisualEffectBlur(material: .menu, blendingMode: .behindWindow)
+                            .clipShape(Capsule())
+                    )
             }
-
-            HStack(spacing: 8) {
-                Text(viewModel.statusMessage)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(viewModel.transcript, forType: .string)
-                } label: {
-                    Label("Copy Transcript", systemImage: "doc.on.doc")
-                        .font(.caption)
-                }
-                .buttonStyle(.borderless)
-                .disabled(viewModel.transcript.isEmpty)
-            }
+            .keyboardShortcut("h", modifiers: [.command])
+            .buttonStyle(.plain)
         }
     }
 
@@ -194,61 +139,31 @@ struct ContentView: View {
         }
     }
 
-    private var providerRow: some View {
-        HStack(spacing: 12) {
-            Menu {
-                ForEach(LLMProvider.allCases) { provider in
-                    Button {
-                        viewModel.llmProvider = provider
-                    } label: {
-                        Label(provider.rawValue, systemImage: viewModel.llmProvider == provider ? "checkmark" : "")
-                    }
+    private var providerPicker: some View {
+        Menu {
+            ForEach(LLMProvider.allCases) { provider in
+                Button {
+                    viewModel.llmProvider = provider
+                } label: {
+                    Label(provider.rawValue, systemImage: viewModel.llmProvider == provider ? "checkmark" : "")
                 }
-            } label: {
-                Label(viewModel.llmProvider.shortName, systemImage: "slider.horizontal.3")
-                    .font(.callout.weight(.semibold))
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(
-                        VisualEffectBlur(material: .menu, blendingMode: .behindWindow)
-                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    )
             }
-            .menuStyle(.borderlessButton)
-
-            TextField(
-                viewModel.llmProvider == .openAI ? "Model (e.g. gpt-4o-mini)" : "Local model (e.g. llama3)",
-                text: $viewModel.currentModel
-            )
-            .textFieldStyle(.plain)
-            .font(.system(.body, design: .monospaced))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(
-                VisualEffectBlur(material: .menu, blendingMode: .behindWindow)
-                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-            )
-
-            Spacer(minLength: 0)
-
-            Button {
-                showAdvancedSettings = true
-            } label: {
-                Label("Models & Settings", systemImage: "slider.horizontal.3")
-                    .font(.callout.weight(.semibold))
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(
-                        VisualEffectBlur(material: .menu, blendingMode: .behindWindow)
-                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    )
-            }
-            .buttonStyle(.plain)
+        } label: {
+            Label(viewModel.llmProvider.shortName, systemImage: "slider.horizontal.3")
         }
+        .menuStyle(.borderlessButton)
+        .labelStyle(.titleAndIcon)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(
+            VisualEffectBlur(material: .menu, blendingMode: .behindWindow)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        )
     }
 
     private var controlRow: some View {
         HStack(spacing: 10) {
+            providerPicker
             Button(action: viewModel.toggleRecording) {
                 Label(viewModel.isRecording ? "Stop" : "Start",
                       systemImage: viewModel.isRecording ? "stop.circle.fill" : "mic.circle.fill")
@@ -279,6 +194,14 @@ struct ContentView: View {
 
             Button(role: .destructive, action: viewModel.clearWorkspace) {
                 Label("Clear", systemImage: "trash")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+
+            Button {
+                showAdvancedSettings = true
+            } label: {
+                Label("Settings", systemImage: "slider.horizontal.3")
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
