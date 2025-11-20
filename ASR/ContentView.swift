@@ -350,15 +350,23 @@ struct ContentView: View {
     private var answerCard: some View {
         OverlayCard(title: "Answer Workspace", systemImage: "sparkles") {
             ScrollView {
-                Text(viewModel.aiResponse.isEmpty ? "Answer text will render as soon as AI responds." : viewModel.aiResponse)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .font(.system(.body, design: .rounded))
-                    .foregroundStyle(Color.white.opacity(0.92))
-                    .padding(16)
-                    .background(
-                        VisualEffectBlur(material: .popover, blendingMode: .behindWindow)
-                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    )
+                if viewModel.aiResponse.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    AnswerPlaceholderView()
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, 24)
+                } else {
+                    LazyVStack(alignment: .leading, spacing: 16) {
+                        ForEach(CodeFormattedAnswerParser.sections(from: viewModel.aiResponse)) { section in
+                            switch section.kind {
+                            case .text:
+                                AnswerTextSectionView(text: section.content)
+                            case let .code(language):
+                                AnswerCodeSectionView(code: section.content, language: language)
+                            }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
             }
             .frame(minHeight: layout.answerMinHeight, maxHeight: layout.answerMinHeight)
         } footer: {
@@ -433,6 +441,135 @@ struct OverlayCard<Content: View, Footer: View>: View {
             VisualEffectBlur(material: .contentBackground, blendingMode: .behindWindow)
                 .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         )
+    }
+}
+
+private struct AnswerPlaceholderView: View {
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "sparkles")
+                .font(.title2)
+                .foregroundStyle(.secondary)
+            Text("Answer text will render as soon as AI responds.")
+                .multilineTextAlignment(.center)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct AnswerTextSectionView: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .font(.system(.body, design: .rounded))
+            .foregroundStyle(Color.white.opacity(0.95))
+            .padding(16)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(Color.white.opacity(0.05))
+            )
+    }
+}
+
+private struct AnswerCodeSectionView: View {
+    let code: String
+    let language: String?
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label(languageLabel, systemImage: "chevron.left.slash.chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(code, forType: .string)
+                    copied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
+                        copied = false
+                    }
+                } label: {
+                    Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                Text(code)
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundStyle(Color.white.opacity(0.95))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.black.opacity(0.4))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.white.opacity(0.15), lineWidth: 1)
+        )
+    }
+
+    private var languageLabel: String {
+        if let language, !language.isEmpty {
+            return language.lowercased()
+        }
+        return "code"
+    }
+}
+
+private struct AnswerSection: Identifiable {
+    let id = UUID()
+    let content: String
+    let kind: AnswerSectionKind
+}
+
+private enum AnswerSectionKind {
+    case text
+    case code(language: String?)
+}
+
+private enum CodeFormattedAnswerParser {
+    static func sections(from text: String) -> [AnswerSection] {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        let parts = trimmed.components(separatedBy: "```")
+        var sections: [AnswerSection] = []
+
+        for (index, part) in parts.enumerated() {
+            let segment = part.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !segment.isEmpty else { continue }
+            if index % 2 == 0 {
+                sections.append(AnswerSection(content: segment, kind: .text))
+            } else {
+                var lines = segment.components(separatedBy: .newlines)
+                let first = lines.first ?? ""
+                var language: String? = first.trimmingCharacters(in: .whitespacesAndNewlines)
+                if language?.isEmpty ?? true {
+                    language = nil
+                } else {
+                    lines.removeFirst()
+                }
+                let body = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !body.isEmpty else { continue }
+                sections.append(AnswerSection(content: body, kind: .code(language: language)))
+            }
+        }
+
+        if sections.isEmpty {
+            return [AnswerSection(content: trimmed, kind: .text)]
+        }
+        return sections
     }
 }
 
