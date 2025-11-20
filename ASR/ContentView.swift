@@ -11,37 +11,28 @@ struct ContentView: View {
     @State private var showDeploymentNotes = false
     @State private var keyboardShortcutMonitor: Any?
     @State private var layout = CoachOverlayLayout.preferred(for: NSScreen.main)
-    @State private var isOverlayHidden = false
-
-    private let collapsedOverlaySize = CGSize(width: 240, height: 150)
 
     var body: some View {
-        let targetSize = isOverlayHidden ? collapsedOverlaySize : layout.size
-        Group {
-            if isOverlayHidden {
-                collapsedOverlay
-            } else {
-                expandedOverlay
+        let targetSize = layout.size
+        expandedOverlay
+            .frame(width: targetSize.width, height: targetSize.height)
+            .background(Color.clear)
+            .onAppear {
+                configureWindow()
+                registerKeyboardShortcuts()
+                refreshLayout()
             }
-        }
-        .frame(width: targetSize.width, height: targetSize.height)
-        .background(Color.clear)
-        .onAppear {
-            configureWindow()
-            registerKeyboardShortcuts()
-            refreshLayout()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
-            refreshLayout()
-        }
-        .onDisappear(perform: removeKeyboardShortcuts)
-        .sheet(isPresented: $showAdvancedSettings) {
-            AdvancedSettingsView(viewModel: viewModel, showDeploymentNotes: $showDeploymentNotes)
-                .frame(minWidth: 520, minHeight: 480)
-        }
-        .task {
-            await viewModel.prepareMicrophonePermissionIfNeeded()
-        }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
+                refreshLayout()
+            }
+            .onDisappear(perform: removeKeyboardShortcuts)
+            .sheet(isPresented: $showAdvancedSettings) {
+                AdvancedSettingsView(viewModel: viewModel, showDeploymentNotes: $showDeploymentNotes)
+                    .frame(minWidth: 520, minHeight: 480)
+            }
+            .task {
+                await viewModel.prepareMicrophonePermissionIfNeeded()
+            }
     }
 
     private var expandedOverlay: some View {
@@ -68,39 +59,6 @@ struct ContentView: View {
                 workspaceStack
             }
             .padding(layout.padding)
-        }
-    }
-
-    private var collapsedOverlay: some View {
-        ZStack {
-            VisualEffectBlur(material: .menu, blendingMode: .behindWindow)
-                .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-                .shadow(color: Color.black.opacity(0.3), radius: 20, x: 0, y: 8)
-
-            VStack(spacing: 12) {
-                Label("Overlay hidden", systemImage: "eye.slash")
-                    .font(.callout.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Text("Recording & AI continue running in the background.")
-                    .font(.caption)
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(.secondary)
-                Button {
-                    toggleOverlayVisibility()
-                } label: {
-                    Label("Reopen Overlay", systemImage: "rectangle.on.rectangle.angled")
-                        .font(.callout.weight(.semibold))
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .background(
-                            VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow)
-                                .clipShape(Capsule())
-                        )
-                }
-                .keyboardShortcut("h", modifiers: [.command])
-                .buttonStyle(.plain)
-            }
-            .padding(20)
         }
     }
 
@@ -183,7 +141,7 @@ struct ContentView: View {
             .disabled(viewModel.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.isProcessing)
 
             Button {
-                viewModel.scanLeftHalfScreenAndAsk()
+                viewModel.scanScreenAndAsk()
             } label: {
                 Label("Scan Screen", systemImage: "macwindow.on.rectangle")
             }
@@ -489,6 +447,32 @@ final class ASRViewModel: ObservableObject {
     private static let defaultOpenAIModel = "gpt-4o-mini"
     private static let defaultLocalModel = "llama3"
     private static let serverDefaultsKey = "ASR.serverURL"
+    private static let defaultOCRSystemPrompt = """
+You will receive raw OCR screen text that may include noise like UI buttons, menus, inbox, timestamps, browser elements, ads, or incomplete fragments.
+
+Your job:
+1) Assume the scan likely contains a coding problem, even if partially captured.
+2) Extract any text that looks like a coding prompt: title (e.g., “125. Valid Palindrome”), description, input/output format, examples, constraints, function signature hints.
+3) Clean and reconstruct the problem — even if fragmented. If parts are missing, infer the most likely LeetCode-style details. Never say “No problem found”; always reconstruct and proceed.
+4) Solve it in coding interview format:
+   • Spoken intuition (2–4 sentences; key idea like two pointers/hash map/recursion/DP; no analogies).
+   • Why this approach (briefly contrast with brute force; focus on performance).
+   • Clean Python code (unless another language is specified) with minimal reasoning comments.
+   • Time & Space Complexity (Big O) + short runtime/scalability note.
+   • Edge cases (1–2 relevant cases).
+
+Rules:
+• Ignore UI noise (Inbox, Settings, Start, Submit, Ask AI, ads, nav bars, timestamps).
+• Never ask the user to re-enter the question.
+• Do not output “I can’t detect a problem.”
+• If the scan seems incomplete, still infer and answer.
+
+Final goal:
+Act like a smart interview assistant that extracts, understands, and solves coding problems from noisy OCR screenshots.
+"""
+    private static let openAIKeyEnvVariable = "OPENAI_API_KEY"
+    private static let envOverridePathKey = "ASR_ENV_FILE"
+    private static let envFileName = ".env"
 
     private let defaults = UserDefaults.standard
 
@@ -518,7 +502,39 @@ final class ASRViewModel: ObservableObject {
     }
     @Published var openAIKey: String = ""
     @Published var localLLMURLString: String = ASRViewModel.defaultLocalLLMEndpoint
-    @Published var systemPrompt: String = "You are an expert AI that answers clearly and concisely."
+    @Published var systemPrompt: String = """
+You are an interview co-pilot. You answer questions exactly like a real candidate speaking in a live technical interview.
+
+🎯 First detect the question type:
+
+1️⃣ If the question is asking for a basic concept or definition
+(ex: What is REST? What is async vs sync? What is a class?),
+→ Give a clear, simple, spoken explanation in plain language.
+→ No analogies, no textbook tone, no long theory.
+→ Answer naturally, conversationally, like you're explaining to another developer.
+→ 2–4 sentences is enough.
+
+2️⃣ If the question asks about usage, implementation, experience, differences, or “how have you used it?”,
+→ Then answer with practical, real or realistic experience.
+→ Explain what you built, decisions you made, challenges you solved, and impact.
+→ Use “I” and keep it real, specific, and conversational.
+
+🚫 Do NOT:
+• Do not use analogies (no waiter/restaurant/car examples).
+• Do not explain concepts academically or like a teacher.
+• Do not list bullet points or theoretical principles.
+• Do not start with “X stands for…” or “At a high level…”
+
+🗣 Tone:
+• Natural spoken English, real interview style.
+• Confident, conversational, and clear.
+• 45–75 sec for experience-based answers.
+• Short and clear for basic definition questions (15–30 sec).
+
+🎤 Goal:
+Sound like a real engineer — sometimes explaining simply, sometimes sharing experience — based on what the question is actually asking.
+"""
+    @Published var ocrSystemPrompt: String = ASRViewModel.defaultOCRSystemPrompt
     @Published var currentModel: String = ASRViewModel.defaultOpenAIModel {
         didSet { storeCurrentModelForProvider() }
     }
@@ -531,10 +547,14 @@ final class ASRViewModel: ObservableObject {
     private let llmService = LLMService()
     private var openAIModelValue: String = ASRViewModel.defaultOpenAIModel
     private var localModelValue: String = ASRViewModel.defaultLocalModel
+    private let maxPromptCharacters = 300
 
     init() {
         defaults.register(defaults: [Self.serverDefaultsKey: Self.defaultServerURL])
         serverURLString = defaults.string(forKey: Self.serverDefaultsKey) ?? Self.defaultServerURL
+        if let envKey = Self.loadOpenAIKeyFromEnvironment() {
+            openAIKey = envKey
+        }
     }
 
     func toggleRecording() {
@@ -562,18 +582,22 @@ final class ASRViewModel: ObservableObject {
         recordingStartedAt = nil
     }
 
-    func scanLeftHalfScreenAndAsk() {
-        statusMessage = "Scanning the left half of the screen..."
+    func scanScreenAndAsk() {
+        statusMessage = "Scanning the screen..."
         Task {
             do {
-                let recognized = try await ScreenTextScanner.captureLeftHalfScreenText()
+                let recognized = try await ScreenTextScanner.captureFullScreenText()
                 let cleaned = recognized.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !cleaned.isEmpty else {
-                    statusMessage = "No readable text detected on the left half of the screen."
+                    statusMessage = "No readable text detected on the screen."
                     return
                 }
                 transcript = cleaned
-                await runLLM(with: cleaned, manageProcessingFlag: true)
+                await runLLM(
+                    with: cleaned,
+                    manageProcessingFlag: true,
+                    systemPromptOverride: ocrSystemPrompt
+                )
             } catch {
                 statusMessage = "Screen scan failed: \(error.localizedDescription)"
             }
@@ -672,7 +696,11 @@ final class ASRViewModel: ObservableObject {
         }
     }
 
-    private func runLLM(with prompt: String, manageProcessingFlag: Bool) async {
+    private func runLLM(
+        with prompt: String,
+        manageProcessingFlag: Bool,
+        systemPromptOverride: String? = nil
+    ) async {
         if manageProcessingFlag {
             isProcessing = true
         }
@@ -683,14 +711,18 @@ final class ASRViewModel: ObservableObject {
         }
 
         do {
+            let trimmedPrompt = prompt.count > maxPromptCharacters
+            ? String(prompt.suffix(maxPromptCharacters))
+            : prompt
+
             let settings = LLMSettings(
                 openAIKey: openAIKey,
                 model: currentModel,
                 localEndpoint: URL(string: localLLMURLString),
-                systemPrompt: systemPrompt
+                systemPrompt: systemPromptOverride ?? systemPrompt
             )
             let answer = try await llmService.respond(
-                to: prompt,
+                to: trimmedPrompt,
                 provider: llmProvider,
                 settings: settings
             )
@@ -790,6 +822,69 @@ final class ASRViewModel: ObservableObject {
         case .local:
             localModelValue = currentModel
         }
+    }
+
+    private static func loadOpenAIKeyFromEnvironment() -> String? {
+        let environment = ProcessInfo.processInfo.environment
+        if let envValue = environment[openAIKeyEnvVariable]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !envValue.isEmpty {
+            return envValue
+        }
+
+        var candidateFiles: [URL] = []
+        if let customPath = environment[envOverridePathKey]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !customPath.isEmpty {
+            candidateFiles.append(URL(fileURLWithPath: customPath))
+        }
+
+        let fileManager = FileManager.default
+        let cwd = URL(fileURLWithPath: fileManager.currentDirectoryPath).appendingPathComponent(envFileName)
+        candidateFiles.append(cwd)
+
+        if let pwd = environment["PWD"] {
+            candidateFiles.append(URL(fileURLWithPath: pwd).appendingPathComponent(envFileName))
+        }
+
+        if let resources = Bundle.main.resourceURL {
+            candidateFiles.append(resources.appendingPathComponent(envFileName))
+            candidateFiles.append(resources.deletingLastPathComponent().appendingPathComponent(envFileName))
+            candidateFiles.append(resources.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent(envFileName))
+        }
+
+        candidateFiles.append(fileManager.homeDirectoryForCurrentUser.appendingPathComponent(envFileName))
+
+        for file in candidateFiles {
+            if let value = parseEnv(fileURL: file, key: openAIKeyEnvVariable) {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private static func parseEnv(fileURL: URL, key: String) -> String? {
+        guard FileManager.default.fileExists(atPath: fileURL.path),
+              let contents = try? String(contentsOf: fileURL) else {
+            return nil
+        }
+        let exportPrefix = "export "
+        for line in contents.split(whereSeparator: \.isNewline) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { continue }
+            let cleaned = trimmed.hasPrefix(exportPrefix)
+            ? String(trimmed.dropFirst(exportPrefix.count))
+            : trimmed
+            let parts = cleaned.split(separator: "=", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+            let name = parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard name == key else { continue }
+            var value = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+            if value.hasPrefix("\""), value.hasSuffix("\""), value.count >= 2 {
+                value = String(value.dropFirst().dropLast())
+            }
+            guard !value.isEmpty else { continue }
+            return value
+        }
+        return nil
     }
 }
 
@@ -1175,7 +1270,7 @@ enum ScreenTextScannerError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .captureFailed:
-            return "Unable to capture the left side of the screen. Ensure screen recording permissions are granted."
+            return "Unable to capture the screen. Ensure screen recording permissions are granted."
         case .recognitionFailed:
             return "No text could be recognized from the captured screen area."
         }
@@ -1184,19 +1279,33 @@ enum ScreenTextScannerError: LocalizedError {
 
 @MainActor
 struct ScreenTextScanner {
-    static func captureLeftHalfScreenText() async throws -> String {
-        let image = try await captureLeftHalfImage()
-        return try await recognizeText(in: image)
-    }
-
-    private static func captureLeftHalfImage() async throws -> CGImage {
-        guard let screen = NSScreen.main else {
+    static func captureFullScreenText() async throws -> String {
+        let screens = NSScreen.screens
+        guard !screens.isEmpty else {
             throw ScreenTextScannerError.captureFailed
         }
+
+        var aggregated: [String] = []
+        for screen in screens {
+            let image = try await captureImage(for: screen)
+            let text = try await recognizeText(in: image)
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                aggregated.append(trimmed)
+            }
+        }
+
+        guard !aggregated.isEmpty else {
+            throw ScreenTextScannerError.recognitionFailed
+        }
+        return aggregated.joined(separator: "\n")
+    }
+
+    private static func captureImage(for screen: NSScreen) async throws -> CGImage {
         let captureRect = CGRect(
             x: screen.frame.minX,
             y: screen.frame.minY,
-            width: screen.frame.width / 2,
+            width: screen.frame.width,
             height: screen.frame.height
         )
 
@@ -1387,24 +1496,21 @@ extension ContentView {
     }
 
     private func refreshLayout() {
-        let screen = NSApplication.shared.windows.first?.screen ?? NSScreen.main
+        let screen = OverlayWindowManager.shared.overlayScreen ?? NSScreen.main
         layout = CoachOverlayLayout.preferred(for: screen)
     }
 
     private func toggleOverlayVisibility() {
-        withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
-            isOverlayHidden.toggle()
-        }
+        OverlayWindowManager.shared.toggleOverlayVisibility()
     }
 
     private func configureWindow() {
-        guard let window = NSApplication.shared.windows.first else { return }
+        guard let window = OverlayWindowManager.shared.registerOverlayWindowIfNeeded(NSApplication.shared.windows.first) else { return }
         window.isOpaque = false
         window.backgroundColor = .clear
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
-        window.styleMask.remove(.resizable)
         window.level = .floating
         window.collectionBehavior.insert(.canJoinAllSpaces)
         window.collectionBehavior.insert(.fullScreenAuxiliary)
@@ -1412,6 +1518,7 @@ extension ContentView {
         window.standardWindowButton(.closeButton)?.isHidden = true
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
+        OverlayWindowManager.shared.registerOverlayWindowIfNeeded(window)
     }
 }
 

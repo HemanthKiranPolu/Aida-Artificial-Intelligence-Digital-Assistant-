@@ -17,7 +17,7 @@ struct ASRApp: App {
             ContentView()
         }
         .windowStyle(.hiddenTitleBar)
-        .windowResizability(.contentSize)
+        .windowResizability(.automatic)
     }
 }
 
