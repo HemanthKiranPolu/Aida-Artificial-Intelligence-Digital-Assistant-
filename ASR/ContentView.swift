@@ -9,7 +9,6 @@ struct ContentView: View {
     @StateObject private var viewModel = ASRViewModel()
     @State private var showAdvancedSettings = false
     @State private var showDeploymentNotes = false
-    @State private var transcriptEditorHeight: CGFloat = 140
     @State private var keyboardShortcutMonitor: Any?
     @State private var layout = CoachOverlayLayout.preferred(for: NSScreen.main)
     @State private var isOverlayHidden = false
@@ -67,7 +66,6 @@ struct ContentView: View {
 
                 providerRow
                 controlRow
-                automationRow
                 workspaceStack
             }
             .padding(layout.padding)
@@ -108,11 +106,15 @@ struct ContentView: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
                 Label("AIDA Overlay", systemImage: "sparkles.tv")
                     .font(.title3.weight(.semibold))
-                Spacer()
+
+                Divider()
+                    .frame(height: 24)
+                    .background(Color.white.opacity(0.2))
+
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     Label(viewModel.recordingDuration(until: context.date), systemImage: "clock")
                         .font(.system(.body, design: .monospaced))
@@ -123,7 +125,30 @@ struct ContentView: View {
                                 .clipShape(Capsule())
                         )
                 }
+
                 statusBadge
+
+                Divider()
+                    .frame(height: 24)
+                    .background(Color.white.opacity(0.2))
+
+                Button {
+                    viewModel.scanLeftHalfScreenAndAsk()
+                } label: {
+                    Label("Scan Left Screen", systemImage: "macwindow.on.rectangle")
+                        .font(.callout.weight(.semibold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(
+                            VisualEffectBlur(material: .menu, blendingMode: .behindWindow)
+                                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        )
+                }
+                .buttonStyle(.plain)
+                .disabled(viewModel.isProcessing)
+
+                Spacer()
+
                 Button {
                     toggleOverlayVisibility()
                 } label: {
@@ -140,9 +165,21 @@ struct ContentView: View {
                 .buttonStyle(.plain)
             }
 
-            Text(viewModel.statusMessage)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Text(viewModel.statusMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(viewModel.transcript, forType: .string)
+                } label: {
+                    Label("Copy Transcript", systemImage: "doc.on.doc")
+                        .font(.caption)
+                }
+                .buttonStyle(.borderless)
+                .disabled(viewModel.transcript.isEmpty)
+            }
         }
     }
 
@@ -207,92 +244,46 @@ struct ContentView: View {
                     )
             }
             .buttonStyle(.plain)
-
-            Button {
-                toggleOverlayVisibility()
-            } label: {
-                Label("Hide", systemImage: "eye.slash")
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(
-                        VisualEffectBlur(material: .menu, blendingMode: .behindWindow)
-                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    )
-            }
-            .keyboardShortcut("h", modifiers: [.command])
-            .buttonStyle(.plain)
         }
     }
 
     private var controlRow: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             Button(action: viewModel.toggleRecording) {
-                Label(viewModel.isRecording ? "Stop Listening" : "Start Listening",
+                Label(viewModel.isRecording ? "Stop" : "Start",
                       systemImage: viewModel.isRecording ? "stop.circle.fill" : "mic.circle.fill")
-                    .font(.title3.weight(.semibold))
-                    .frame(maxWidth: .infinity)
             }
             .keyboardShortcut(.space)
             .buttonStyle(.borderedProminent)
             .tint(viewModel.isRecording ? .red : .green)
+            .controlSize(.small)
 
             Button {
                 Task { await viewModel.askAIManually() }
             } label: {
-                Label("Answer Question", systemImage: "sparkles")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
+                Label("Ask AI", systemImage: "sparkles")
             }
             .buttonStyle(.bordered)
+            .controlSize(.small)
             .disabled(viewModel.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.isProcessing)
-
-            Button(role: .destructive, action: viewModel.clearWorkspace) {
-                Label("Clear", systemImage: "trash")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.bordered)
-        }
-    }
-
-    private var automationRow: some View {
-        HStack(spacing: 12) {
-            Toggle(isOn: $viewModel.shouldAutoAsk) {
-                Label("Auto ask AI", systemImage: "sparkles.rectangle.stack")
-            }
-            .toggleStyle(.button)
-            .buttonStyle(.borderedProminent)
-            .tint(.purple)
-
-            Toggle(isOn: $viewModel.autoStopOnSilence) {
-                Label("Auto stop on silence", systemImage: "waveform")
-            }
-            .toggleStyle(.button)
-            .buttonStyle(.borderedProminent)
-            .tint(.orange)
 
             Button {
                 viewModel.scanLeftHalfScreenAndAsk()
             } label: {
-                Label("Scan Left Screen", systemImage: "macwindow.on.rectangle")
-                    .font(.callout.weight(.semibold))
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
+                Label("Scan Screen", systemImage: "macwindow.on.rectangle")
             }
             .buttonStyle(.borderedProminent)
+            .tint(.blue)
+            .controlSize(.small)
             .disabled(viewModel.isProcessing)
 
-            Spacer()
-
-            Button {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(viewModel.transcript, forType: .string)
-            } label: {
-                Label("Copy Transcript", systemImage: "doc.on.doc")
+            Button(role: .destructive, action: viewModel.clearWorkspace) {
+                Label("Clear", systemImage: "trash")
             }
             .buttonStyle(.bordered)
-            .disabled(viewModel.transcript.isEmpty)
+            .controlSize(.small)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var workspaceStack: some View {
@@ -308,7 +299,7 @@ struct ContentView: View {
                 TextEditor(text: $viewModel.transcript)
                     .font(.system(.body, design: .monospaced))
                     .foregroundStyle(Color.white.opacity(0.92))
-                    .frame(height: transcriptEditorHeight)
+                    .frame(height: 24)
                     .padding(.top, 6)
                     .padding(.horizontal, 6)
                     .scrollContentBackground(.hidden)
@@ -321,13 +312,6 @@ struct ContentView: View {
                         .allowsHitTesting(false)
                 }
             }
-            .background(
-                AutoHeightReader(text: viewModel.transcript,
-                                 font: .system(.body, design: .monospaced),
-                                 minHeight: 100,
-                                 maxHeight: 100,
-                                 height: $transcriptEditorHeight)
-            )
         } footer: {
             HStack {
                 Text("\(viewModel.transcript.count) characters")
@@ -1447,36 +1431,6 @@ struct ResponsiveStack<Content: View>: View {
                 content()
             }
         }
-    }
-}
-
-struct AutoHeightReader: View {
-    let text: String
-    let font: Font
-    let minHeight: CGFloat
-    let maxHeight: CGFloat
-    @Binding var height: CGFloat
-
-    var body: some View {
-        Text(text.isEmpty ? " " : text + "\n")
-            .font(font)
-            .foregroundColor(.clear)
-            .padding(.horizontal, 12)
-            .background(
-                GeometryReader { proxy in
-                    Color.clear
-                        .onAppear {
-                            height = clampHeight(proxy.size.height)
-                        }
-                        .onChange(of: proxy.size.height) { _, newValue in
-                            height = clampHeight(newValue)
-                        }
-                }
-            )
-    }
-
-    private func clampHeight(_ raw: CGFloat) -> CGFloat {
-        min(maxHeight, max(minHeight, raw + 24))
     }
 }
 
