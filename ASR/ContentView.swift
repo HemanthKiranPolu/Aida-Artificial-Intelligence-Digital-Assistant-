@@ -433,6 +433,10 @@ final class ScreenShareMonitor {
         guard let infoList = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
             return false
         }
+        let mainArea: CGFloat = {
+            let frame = NSScreen.main?.frame ?? .zero
+            return frame.width * frame.height
+        }()
 
         let ownerKeywords: [String] = [
             "zoom", "zoom.us", "webex", "microsoft teams", "teams", "google chrome", "safari", "firefox", "meet"
@@ -446,7 +450,13 @@ final class ScreenShareMonitor {
             let name = (info[kCGWindowName as String] as? String)?.lowercased() ?? ""
             let ownerHit = ownerKeywords.contains(where: { owner.contains($0) })
             let windowHit = windowKeywords.contains(where: { name.contains($0) })
-            if ownerHit && windowHit {
+            let bounds = info[kCGWindowBounds as String] as? [String: CGFloat]
+            let width = bounds?["Width"] ?? 0
+            let height = bounds?["Height"] ?? 0
+            let area = width * height
+            let isLargeWindow = mainArea > 0 ? area >= mainArea * 0.4 : false
+
+            if ownerHit && (windowHit || isLargeWindow) {
                 return true
             }
         }
