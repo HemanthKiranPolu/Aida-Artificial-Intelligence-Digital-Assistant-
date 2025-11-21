@@ -2,7 +2,7 @@ import SwiftUI
 import AVFoundation
 import AppKit
 import Combine
-import Vision
+@preconcurrency import Vision
 import ScreenCaptureKit
 
 struct ContentView: View {
@@ -10,6 +10,8 @@ struct ContentView: View {
     @State private var showAdvancedSettings = false
     @State private var showDeploymentNotes = false
     @State private var keyboardShortcutMonitor: Any?
+    @State private var globalKeyboardShortcutMonitor: Any?
+    @State private var screenShareMonitor = ScreenShareMonitor()
     @State private var layout = CoachOverlayLayout.preferred(for: NSScreen.main)
 
     var body: some View {
@@ -21,11 +23,17 @@ struct ContentView: View {
                 configureWindow()
                 registerKeyboardShortcuts()
                 refreshLayout()
+                screenShareMonitor.startMonitoring { isSharing in
+                    OverlayWindowManager.shared.suppressForCapture(isSharing)
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
                 refreshLayout()
             }
-            .onDisappear(perform: removeKeyboardShortcuts)
+            .onDisappear {
+                removeKeyboardShortcuts()
+                screenShareMonitor.stopMonitoring()
+            }
             .sheet(isPresented: $showAdvancedSettings) {
                 AdvancedSettingsView(viewModel: viewModel, showDeploymentNotes: $showDeploymentNotes)
                     .frame(minWidth: 520, minHeight: 480)
@@ -396,6 +404,54 @@ private struct AnswerSection: Identifiable {
     let id = UUID()
     let content: String
     let kind: AnswerSectionKind
+}
+
+final class ScreenShareMonitor {
+    private var timer: Timer?
+    private let interval: TimeInterval = 2.0
+
+    func startMonitoring(changeHandler: @escaping (Bool) -> Void) {
+        stopMonitoring()
+        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { _ in
+            let active = ScreenShareMonitor.isScreenSharingLikely()
+            DispatchQueue.main.async {
+                changeHandler(active)
+            }
+        }
+        if let timer {
+            RunLoop.main.add(timer, forMode: .common)
+        }
+    }
+
+    func stopMonitoring() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    private static func isScreenSharingLikely() -> Bool {
+        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+        guard let infoList = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
+            return false
+        }
+
+        let ownerKeywords: [String] = [
+            "zoom", "zoom.us", "webex", "microsoft teams", "teams", "google chrome", "safari", "firefox", "meet"
+        ]
+        let windowKeywords: [String] = [
+            "sharing", "screen share", "you're sharing", "is sharing your", "previewing"
+        ]
+
+        for info in infoList {
+            guard let owner = (info[kCGWindowOwnerName as String] as? String)?.lowercased() else { continue }
+            let name = (info[kCGWindowName as String] as? String)?.lowercased() ?? ""
+            let ownerHit = ownerKeywords.contains(where: { owner.contains($0) })
+            let windowHit = windowKeywords.contains(where: { name.contains($0) })
+            if ownerHit && windowHit {
+                return true
+            }
+        }
+        return false
+    }
 }
 
 private enum AnswerSectionKind {
@@ -863,16 +919,22 @@ Sound like a real engineer — sometimes explaining simply, sometimes sharing ex
 
     private static func parseEnv(fileURL: URL, key: String) -> String? {
         guard FileManager.default.fileExists(atPath: fileURL.path),
-              let contents = try? String(contentsOf: fileURL) else {
+              let contents = try? String(contentsOf: fileURL, encoding: .utf8) else {
             return nil
         }
-        let exportPrefix = "export "
+        let commentPrefixes = ["#", "//"]
+        let allowedPrefixes = ["export ", "let ", "var ", "const "]
         for line in contents.split(whereSeparator: \.isNewline) {
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { continue }
-            let cleaned = trimmed.hasPrefix(exportPrefix)
-            ? String(trimmed.dropFirst(exportPrefix.count))
-            : trimmed
+            guard !trimmed.isEmpty else { continue }
+            if commentPrefixes.contains(where: { trimmed.hasPrefix($0) }) {
+                continue
+            }
+            var cleaned = trimmed
+            for prefix in allowedPrefixes where cleaned.hasPrefix(prefix) {
+                cleaned = String(cleaned.dropFirst(prefix.count))
+                break
+            }
             let parts = cleaned.split(separator: "=", maxSplits: 1)
             guard parts.count == 2 else { continue }
             let name = parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1277,6 +1339,10 @@ enum ScreenTextScannerError: LocalizedError {
     }
 }
 
+private struct UncheckedSendableBox<T>: @unchecked Sendable {
+    let value: T
+}
+
 @MainActor
 struct ScreenTextScanner {
     static func captureFullScreenText() async throws -> String {
@@ -1349,10 +1415,11 @@ struct ScreenTextScanner {
             request.usesLanguageCorrection = true
             request.minimumTextHeight = 0.01
 
-            let handler = VNImageRequestHandler(cgImage: image, options: [:])
+            let handler = UncheckedSendableBox(value: VNImageRequestHandler(cgImage: image, options: [:]))
+            let requestBox = UncheckedSendableBox(value: request)
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
-                    try handler.perform([request])
+                    try handler.value.perform([requestBox.value])
                 } catch {
                     continuation.resume(throwing: error)
                 }
@@ -1468,31 +1535,47 @@ struct ResponsiveStack<Content: View>: View {
 
 extension ContentView {
     private func registerKeyboardShortcuts() {
-        guard keyboardShortcutMonitor == nil else { return }
+        guard keyboardShortcutMonitor == nil, globalKeyboardShortcutMonitor == nil else { return }
+
         keyboardShortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            let modifierFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            guard modifierFlags.contains(.command),
-                  !event.isARepeat,
-                  let character = event.charactersIgnoringModifiers?.lowercased().first else {
-                return event
-            }
-            switch character {
-            case "d":
-                viewModel.toggleRecording()
-                return nil
-            case "h":
-                toggleOverlayVisibility()
-                return nil
-            default:
-                return event
+            handleKeyboardShortcut(event) ? nil : event
+        }
+
+        globalKeyboardShortcutMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { event in
+            DispatchQueue.main.async {
+                _ = handleKeyboardShortcut(event)
             }
         }
     }
 
     private func removeKeyboardShortcuts() {
-        guard let monitor = keyboardShortcutMonitor else { return }
-        NSEvent.removeMonitor(monitor)
-        keyboardShortcutMonitor = nil
+        if let monitor = keyboardShortcutMonitor {
+            NSEvent.removeMonitor(monitor)
+            keyboardShortcutMonitor = nil
+        }
+        if let monitor = globalKeyboardShortcutMonitor {
+            NSEvent.removeMonitor(monitor)
+            globalKeyboardShortcutMonitor = nil
+        }
+    }
+
+    private func handleKeyboardShortcut(_ event: NSEvent) -> Bool {
+        let modifierFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard modifierFlags.contains(.command),
+              !event.isARepeat,
+              let character = event.charactersIgnoringModifiers?.lowercased().first else {
+            return false
+        }
+        switch character {
+        case "d":
+            viewModel.toggleRecording()
+            return true
+        case "h":
+            toggleOverlayVisibility()
+            return true
+        default:
+            return false
+        }
     }
 
     private func refreshLayout() {
@@ -1512,9 +1595,8 @@ extension ContentView {
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
         window.level = .floating
-        window.collectionBehavior.insert(.canJoinAllSpaces)
-        window.collectionBehavior.insert(.fullScreenAuxiliary)
-        window.collectionBehavior.insert(.ignoresCycle)
+        window.sharingType = .none
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         window.standardWindowButton(.closeButton)?.isHidden = true
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         window.standardWindowButton(.zoomButton)?.isHidden = true

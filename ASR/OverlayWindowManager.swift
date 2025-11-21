@@ -11,6 +11,7 @@ final class OverlayWindowManager {
 
     private weak var overlayWindow: NSWindow?
     private var iconWindow: NSWindow?
+    private var suppressedVisibility: (overlay: Bool, icon: Bool)?
     private var pendingIconReposition: DispatchWorkItem?
 
     var overlayScreen: NSScreen? {
@@ -19,6 +20,10 @@ final class OverlayWindowManager {
 
     var isOverlayVisible: Bool {
         overlayWindow?.isVisible ?? false
+    }
+
+    private var isIconVisible: Bool {
+        iconWindow?.isVisible ?? false
     }
 
     @discardableResult
@@ -59,6 +64,23 @@ final class OverlayWindowManager {
         scheduleIconReposition()
     }
 
+    func suppressForCapture(_ suppress: Bool) {
+        if suppress {
+            suppressedVisibility = (isOverlayVisible, isIconVisible)
+            overlayWindow?.orderOut(nil)
+            iconWindow?.orderOut(nil)
+        } else {
+            guard let previous = suppressedVisibility else { return }
+            suppressedVisibility = nil
+            if previous.overlay {
+                showOverlay()
+            } else if previous.icon {
+                ensureIconWindow()
+                iconWindow?.makeKeyAndOrderFront(nil)
+            }
+        }
+    }
+
     private func ensureIconWindow() {
         guard iconWindow == nil else { return }
 
@@ -79,6 +101,7 @@ final class OverlayWindowManager {
         window.backgroundColor = .clear
         window.hasShadow = true
         window.level = .floating
+        window.sharingType = .none
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.ignoresMouseEvents = false
         window.isMovableByWindowBackground = true
